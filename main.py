@@ -1,15 +1,13 @@
-import time
+from network import Bluetooth
 import binascii
-import pycom
-import socket
 from machine import I2C
+import time
 from struct import unpack
-from network import LoRa
 
-off = 0x000000
-red = 0xff0000
-green = 0x00ff00
-blue = 0x0000ff
+def uuid2bytes(uuid):
+    uuid = uuid.encode().replace(b'-',b'')
+    tmp = binascii.unhexlify(uuid)
+    return bytes(reversed(tmp))
 
 class Chirp:
 	def __init__(self, address):
@@ -31,53 +29,30 @@ class Chirp:
 		time.sleep(1.5)
 		return self.get_reg(4)
 
-class LoRaNetwork:
-	def __init__(self):
-		# Turn off hearbeat LED
-		pycom.heartbeat(False)
-		# Initialize LoRaWAN radio
-		self.lora = LoRa(mode=LoRa.LORAWAN)
-		# Set network keys
-		app_eui = binascii.unhexlify('70B3D57EF0003F19')
-		app_key = binascii.unhexlify('4BA446ECCF1AB9398B0485561095297C')
-		# Join the network
-		self.lora.join(activation=LoRa.OTAA, auth=(app_eui, app_key), timeout=0)
-		pycom.rgbled(red)
-		# Loop until joined
-		while not self.lora.has_joined():
-			print('Not joined yet...')
-			pycom.rgbled(off)
-			time.sleep(0.1)
-			pycom.rgbled(red)
-			time.sleep(2)
-		print('Joined')
-		pycom.rgbled(blue)
-		self.s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
-		self.s.setsockopt(socket.SOL_LORA, socket.SO_DR, 5)
-		self.s.setblocking(True)
-		self.bytesarraytemp = bytearray(3)
-		#sensor
-		addr = 0x20 #or 32
-		self.chirp = Chirp(addr)
+bluetooth = Bluetooth()
+bluetooth.set_advertisement(name='LoPy', service_uuid=b'1234567890123456')
 
-	def convertbytes(self, data, sensor_id):
-		self.bytesarraytemp[1] = (data & 0xFF00) >> 8
-		self.bytesarraytemp[2] = (data & 0x00FF) 
-		self.bytesarraytemp[0] = sensor_id
-		return self.bytesarraytemp
-	
-	def senddata(self):
-		while True:
-			count = self.s.send(self.convertbytes(self.chirp.temp(), 0xAA))	
-			print(count)
-			count = self.s.send(self.convertbytes(self.chirp.moist(), 0xBB))	
-			print(count)
-			count = self.s.send(self.convertbytes(self.chirp.light(), 0xCC))
-			print(count)
-			pycom.rgbled(green)
-			time.sleep(0.1)
-			pycom.rgbled(blue)
-			time.sleep(59.9)
+def conn_cb (bt_o):
+    events = bt_o.events()
+    if  events & Bluetooth.CLIENT_CONNECTED:
+        print("Client connected")
+    elif events & Bluetooth.CLIENT_DISCONNECTED:
+        print("Client disconnected")
 
-start = LoRaNetwork()
-start.senddata()
+bluetooth.callback(trigger=Bluetooth.CLIENT_CONNECTED | Bluetooth.CLIENT_DISCONNECTED, handler=conn_cb)
+
+bluetooth.advertise(True)
+
+addr = 0x20 #or 32
+chirp = Chirp(addr)
+
+srv2 = bluetooth.service(uuid=uuid2bytes('00001110-2222-1002-8010-00805F9B34FB'), isprimary=True)
+
+chr2 = srv2.characteristic(uuid=uuid2bytes('82460002-4098-1000-8666-00805F9B34FB'), value=chirp.moist())
+char2_read_counter = chirp.moist()
+def char2_cb_handler(chr):
+    global char2_read_counter
+    char2_read_counter = chirp.moist()
+    return char2_read_counter
+
+char2_cb = chr2.callback(trigger=Bluetooth.CHAR_READ_EVENT, handler=char2_cb_handler)
